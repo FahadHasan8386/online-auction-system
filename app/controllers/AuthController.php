@@ -1,106 +1,95 @@
 <?php
+// app/controllers/AuthController.php
+
+require_once '../../app/core/Database.php';
+require_once '../../app/models/User.php';
+require_once '../../app/helpers/SessionHelper.php';
+
 class AuthController {
     private $userModel;
-    
+
     public function __construct() {
         $this->userModel = new User();
     }
-    
-    public function login() {
-        if (isset($_SESSION['user_id'])) {
-            $this->redirectBasedOnRole();
+
+    public function doLogin() {
+        header('Content-Type: application/json');
+
+        $data = json_decode(file_get_contents('php://input'), true);
+        $email    = $data['email'] ?? '';
+        $password = $data['password'] ?? '';
+        $role     = $data['role'] ?? '';
+
+        if (!$email || !$password || !$role) {
+            echo json_encode(['success' => false, 'msg' => 'All fields required.']);
             return;
         }
-        require_once '../app/views/auth/login.php';
-    }
-    
-    public function doLogin() {
-        $email = $_POST['email'] ?? '';
-        $password = $_POST['password'] ?? '';
-        
-        $user = $this->userModel->findByEmail($email);
-        
-        if ($user && password_verify($password, $user['password_hash'])) {
-            if (!$user['is_active']) {
-                $_SESSION['error'] = "Account is deactivated. Contact admin.";
-                header('Location: /online-auction-system/public/login');
-                return;
-            }
-            
-            $_SESSION['user_id'] = $user['id'];
-            $_SESSION['user_name'] = $user['name'];
-            $_SESSION['user_role'] = $user['role'];
-            
-            $this->redirectBasedOnRole();
-        } else {
-            $_SESSION['error'] = "Invalid email or password";
-            header('Location: /online-auction-system/public/login');
+
+        $user = $this->userModel->login($email, $password);
+
+        if ($user === null) {
+            echo json_encode(['success' => false, 'msg' => 'Invalid credentials.']);
+            return;
         }
-    }
-    
-    private function redirectBasedOnRole() {
-        $role = $_SESSION['user_role'];
-        switch($role) {
-            case 'buyer':
-                header('Location: /online-auction-system/public/buyer/dashboard');
-                break;
-            case 'seller':
-                header('Location: /online-auction-system/public/seller/dashboard');
-                break;
-            case 'moderator':
-                header('Location: /online-auction-system/public/moderator/dashboard');
-                break;
-            case 'admin':
-                header('Location: /online-auction-system/public/admin/dashboard');
-                break;
-            default:
-                header('Location: /online-auction-system/public/');
+
+        $dbRole = $user['role'] ?? 'buyer';
+        if ($role !== $dbRole) {
+            echo json_encode(['success' => false, 'msg' => "Role '$role' not allowed for this account."]);
+            return;
         }
+
+        session_regenerate_id();
+        $_SESSION['user_id']   = $user['id'];
+        $_SESSION['name']      = $user['name'];
+        $_SESSION['email']     = $user['email'];
+        $_SESSION['role']      = $dbRole;
+        $_SESSION['loggedin']  = true;
+
+        $dashUrl = $this->getDashboardUrl($dbRole);
+        echo json_encode(['success' => true, 'redirect' => $dashUrl]);
     }
-    
-    public function register() {
-        require_once '../app/views/auth/register.php';
-    }
-    
-    public function doRegister() {
-        $errors = [];
-        
-        // Validation
-        if (empty($_POST['name'])) $errors[] = "Name is required";
-        if (empty($_POST['email'])) $errors[] = "Email is required";
-        if (strlen($_POST['password']) < 6) $errors[] = "Password must be at least 6 characters";
-        if ($_POST['password'] !== $_POST['confirm_password']) $errors[] = "Passwords do not match";
-        
-        // Check if email exists
-        if ($this->userModel->findByEmail($_POST['email'])) {
-            $errors[] = "Email already registered";
-        }
-        
-        if (empty($errors)) {
-            $data = [
-                'name' => $_POST['name'],
-                'email' => $_POST['email'],
-                'password' => $_POST['password'],
-                'phone' => $_POST['phone'] ?? '',
-                'bio' => $_POST['bio'] ?? ''
-            ];
-            
-            if ($this->userModel->create($data)) {
-                $_SESSION['success'] = "Registration successful! Please login.";
-                header('Location: /online-auction-system/public/login');
-            } else {
-                $_SESSION['error'] = "Registration failed";
-                header('Location: /online-auction-system/public/register');
-            }
-        } else {
-            $_SESSION['errors'] = $errors;
-            header('Location: /online-auction-system/public/register');
-        }
-    }
-    
+
     public function logout() {
+        session_start();
         session_destroy();
-        header('Location: /online-auction-system/public/login');
+        header('Location: /');
+        exit;
+    }
+
+    public function register() {
+        $name   = $_POST['name'] ?? '';
+        $email  = $_POST['email'] ?? '';
+        $phone  = $_POST['phone'] ?? '';
+        $bio    = $_POST['bio'] ?? '';
+        $pass   = $_POST['password'] ?? '';
+
+        if (!$name || !$email || !$pass) {
+            die("All required fields missing.");
+        }
+
+        $hashed = password_hash($pass, PASSWORD_DEFAULT);
+
+        $sql = "INSERT INTO users (name, email, password_hash, phone, bio, role, seller_verified, is_active, reputation_score, created_at)
+                VALUES (?, ?, ?, ?, ?, 'buyer', 0, 1, 100, NOW())";
+
+        $db = new Database();
+        $stmt = $db->getConnection()->prepare($sql);
+        $stmt->bind_param("sssss", $name, $email, $hashed, $phone, $bio);
+
+        if ($stmt->execute()) {
+            echo "Registration successful. <a href='/'>Login now</a>";
+        } else {
+            echo "Error: " . $db->getConnection()->error;
+        }
+    }
+
+    private function getDashboardUrl($role) {
+        $map = [
+            'buyer'     => '/buyer/dashboard.php',
+            'seller'    => '/seller/dashboard.php',
+            'moderator' => '/moderator/dashboard.php',
+            'admin'     => '/admin/dashboard.php',
+        ];
+        return $map[$role] ?? '/buyer/dashboard.php';
     }
 }
-?>
