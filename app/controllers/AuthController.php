@@ -1,95 +1,239 @@
 <?php
-// app/controllers/AuthController.php
+// Authentication Controller
+// Location: OnlineAuctionSystem/controllers/authController.php
 
-require_once '../../app/core/Database.php';
-require_once '../../app/models/User.php';
-require_once '../../app/helpers/SessionHelper.php';
+require_once '../config/database.php';
 
-class AuthController {
-    private $userModel;
+session_start();
 
-    public function __construct() {
-        $this->userModel = new User();
-    }
+// Make $conn global to ensure it's accessible
+global $conn;
 
-    public function doLogin() {
-        header('Content-Type: application/json');
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
-        $data = json_decode(file_get_contents('php://input'), true);
-        $email    = $data['email'] ?? '';
-        $password = $data['password'] ?? '';
-        $role     = $data['role'] ?? '';
+    if (isset($_POST['action'])) {
 
-        if (!$email || !$password || !$role) {
-            echo json_encode(['success' => false, 'msg' => 'All fields required.']);
-            return;
+        $action = $_POST['action'];
+
+        // ================= LOGIN =================
+
+        if ($action == 'login') {
+
+            $email = trim($_POST['email']);
+            $password = $_POST['password'];
+
+            $errors = [];
+
+            // Validation
+            if (empty($email)) {
+                $errors[] = "Email is required";
+            }
+
+            if (empty($password)) {
+                $errors[] = "Password is required";
+            }
+
+            if (empty($errors)) {
+
+                $sql = "SELECT * FROM users WHERE email = ? LIMIT 1";
+
+                $stmt = mysqli_prepare($conn, $sql);
+
+                if (!$stmt) {
+                    $_SESSION['error'] = "Database error: " . mysqli_error($conn);
+                    header("Location: ../views/shared/login.php");
+                    exit();
+                }
+
+                mysqli_stmt_bind_param($stmt, "s", $email);
+
+                if (!mysqli_stmt_execute($stmt)) {
+                    $_SESSION['error'] = "Database error: " . mysqli_stmt_error($stmt);
+                    header("Location: ../views/shared/login.php");
+                    exit();
+                }
+
+                $result = mysqli_stmt_get_result($stmt);
+
+                $user = mysqli_fetch_assoc($result);
+
+                if ($user && password_verify($password, $user['password_hash'])) {
+
+                    // Check account status
+                    if ($user['is_active'] == 0) {
+
+                        $_SESSION['error'] = "Your account is deactivated";
+
+                        header("Location: ../views/shared/login.php");
+                        exit();
+                    }
+
+                    // Session
+                    $_SESSION['user_id'] = $user['id'];
+                    $_SESSION['user_name'] = $user['name'];
+                    $_SESSION['user_email'] = $user['email'];
+                    $_SESSION['role'] = $user['role'];
+
+                    // Redirect by role
+                    if ($user['role'] == 'buyer') {
+
+                        header("Location: ../views/buyer/buyerdashboard.php");
+
+                    } elseif ($user['role'] == 'seller') {
+
+                        header("Location: ../views/seller/sellerDashboard.php");
+
+                    } elseif ($user['role'] == 'moderator') {
+
+                        header("Location: ../views/moderator/moderatorDashboard.php");
+
+                    } elseif ($user['role'] == 'admin') {
+
+                        header("Location: ../views/admin/adminDashboard.php");
+                    }
+
+                    exit();
+
+                } else {
+
+                    $_SESSION['error'] = "Invalid email or password";
+
+                    header("Location: ../views/shared/login.php");
+
+                    exit();
+                }
+
+            } else {
+
+                $_SESSION['errors'] = $errors;
+
+                header("Location: ../views/shared/login.php");
+
+                exit();
+            }
+
         }
 
-        $user = $this->userModel->login($email, $password);
+        // ================= REGISTER =================
 
-        if ($user === null) {
-            echo json_encode(['success' => false, 'msg' => 'Invalid credentials.']);
-            return;
+        elseif ($action == 'register') {
+
+            $name = trim($_POST['name']);
+            $email = trim($_POST['email']);
+            $phone = trim($_POST['phone']);
+            $bio = isset($_POST['bio']) ? trim($_POST['bio']) : '';
+            $password = $_POST['password'];
+            $confirm_password = $_POST['confirm_password'];
+
+            $errors = [];
+
+            // Validation
+            if (empty($name)) {
+                $errors[] = "Name is required";
+            }
+
+            if (empty($email)) {
+                $errors[] = "Email is required";
+            } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $errors[] = "Invalid email format";
+            }
+
+            if (empty($phone)) {
+                $errors[] = "Phone is required";
+            }
+
+            if (empty($password)) {
+                $errors[] = "Password is required";
+            } elseif (strlen($password) < 6) {
+                $errors[] = "Password must be at least 6 characters";
+            }
+
+            if ($password != $confirm_password) {
+                $errors[] = "Passwords do not match";
+            }
+
+            // Check email exists
+            if (empty($errors)) {
+
+                $checkSql = "SELECT id FROM users WHERE email = ?";
+
+                $checkStmt = mysqli_prepare($conn, $checkSql);
+
+                if (!$checkStmt) {
+                    $_SESSION['error'] = "Database error: " . mysqli_error($conn);
+                    header("Location: ../views/shared/register.php");
+                    exit();
+                }
+
+                mysqli_stmt_bind_param($checkStmt, "s", $email);
+
+                if (!mysqli_stmt_execute($checkStmt)) {
+                    $_SESSION['error'] = "Database error: " . mysqli_stmt_error($checkStmt);
+                    header("Location: ../views/shared/register.php");
+                    exit();
+                }
+
+                $checkResult = mysqli_stmt_get_result($checkStmt);
+
+                if (mysqli_num_rows($checkResult) > 0) {
+
+                    $errors[] = "Email already exists";
+                }
+            }
+
+            // Insert user
+            if (empty($errors)) {
+
+                $hashed_password = password_hash($password, PASSWORD_DEFAULT);
+
+                $sql = "INSERT INTO users 
+                        (name, email, phone, bio, password_hash, role, seller_verified, is_active, reputation_score, created_at)
+                        VALUES (?, ?, ?, ?, ?, 'buyer', 0, 1, 0, NOW())";
+
+                $stmt = mysqli_prepare($conn, $sql);
+
+                if (!$stmt) {
+                    $_SESSION['error'] = "Database error: " . mysqli_error($conn);
+                    header("Location: ../views/shared/register.php");
+                    exit();
+                }
+
+                mysqli_stmt_bind_param(
+                    $stmt,
+                    "sssss",
+                    $name,
+                    $email,
+                    $phone,
+                    $bio,
+                    $hashed_password
+                );
+
+                if (mysqli_stmt_execute($stmt)) {
+
+                    $_SESSION['success'] = "Registration successful! Please login.";
+
+                    header("Location: ../views/shared/login.php");
+
+                    exit();
+
+                } else {
+
+                    $_SESSION['error'] = "Registration failed: " . mysqli_stmt_error($stmt);
+
+                    header("Location: ../views/shared/register.php");
+
+                    exit();
+                }
+
+            } else {
+
+                $_SESSION['errors'] = $errors;
+
+                header("Location: ../views/shared/register.php");
+
+                exit();
+            }
         }
-
-        $dbRole = $user['role'] ?? 'buyer';
-        if ($role !== $dbRole) {
-            echo json_encode(['success' => false, 'msg' => "Role '$role' not allowed for this account."]);
-            return;
-        }
-
-        session_regenerate_id();
-        $_SESSION['user_id']   = $user['id'];
-        $_SESSION['name']      = $user['name'];
-        $_SESSION['email']     = $user['email'];
-        $_SESSION['role']      = $dbRole;
-        $_SESSION['loggedin']  = true;
-
-        $dashUrl = $this->getDashboardUrl($dbRole);
-        echo json_encode(['success' => true, 'redirect' => $dashUrl]);
-    }
-
-    public function logout() {
-        session_start();
-        session_destroy();
-        header('Location: /');
-        exit;
-    }
-
-    public function register() {
-        $name   = $_POST['name'] ?? '';
-        $email  = $_POST['email'] ?? '';
-        $phone  = $_POST['phone'] ?? '';
-        $bio    = $_POST['bio'] ?? '';
-        $pass   = $_POST['password'] ?? '';
-
-        if (!$name || !$email || !$pass) {
-            die("All required fields missing.");
-        }
-
-        $hashed = password_hash($pass, PASSWORD_DEFAULT);
-
-        $sql = "INSERT INTO users (name, email, password_hash, phone, bio, role, seller_verified, is_active, reputation_score, created_at)
-                VALUES (?, ?, ?, ?, ?, 'buyer', 0, 1, 100, NOW())";
-
-        $db = new Database();
-        $stmt = $db->getConnection()->prepare($sql);
-        $stmt->bind_param("sssss", $name, $email, $hashed, $phone, $bio);
-
-        if ($stmt->execute()) {
-            echo "Registration successful. <a href='/'>Login now</a>";
-        } else {
-            echo "Error: " . $db->getConnection()->error;
-        }
-    }
-
-    private function getDashboardUrl($role) {
-        $map = [
-            'buyer'     => '/buyer/dashboard.php',
-            'seller'    => '/seller/dashboard.php',
-            'moderator' => '/moderator/dashboard.php',
-            'admin'     => '/admin/dashboard.php',
-        ];
-        return $map[$role] ?? '/buyer/dashboard.php';
     }
 }
+?>
